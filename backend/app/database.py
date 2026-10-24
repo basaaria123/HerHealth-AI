@@ -5,9 +5,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./herhealth.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Render may provide a URL beginning with postgres:// or postgresql://.
+if not DATABASE_URL:
+    # Local development fallback only.
+    DATABASE_URL = "sqlite:///./herhealth.db"
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace(
         "postgres://",
@@ -19,6 +22,14 @@ elif DATABASE_URL.startswith("postgresql://"):
         "postgresql://",
         "postgresql+psycopg://",
         1,
+    )
+
+if not DATABASE_URL.startswith(
+    ("sqlite:///", "postgresql+psycopg://")
+):
+    raise ValueError(
+        "DATABASE_URL must be a valid SQLite or PostgreSQL URL. "
+        "Check the DATABASE_URL environment variable."
     )
 
 connect_args = (
