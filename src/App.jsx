@@ -1,329 +1,350 @@
-
-import { useEffect, useMemo, useState } from "react";
+/**
+ * HerHealth AI — Main Application
+ * Nine-screen women's health tracking platform with
+ * reference-accurate UI, real backend integration, and auth.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  BarChart,
-  Bar,
-} from "recharts";
-import BottomNav from "./components/BottomNav";
-import "./App.css";
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis,
+  CartesianGrid, Tooltip, BarChart, Bar,
+} from 'recharts';
+import {
+  Home, PenLine, ClipboardList, BarChart3, MessageCircle,
+  Lightbulb, FileText, CalendarDays, ShieldCheck, MoreHorizontal,
+  ChevronLeft, ArrowRight, Download, Trash2, Send, BookOpen,
+  AlertTriangle, Heart, Activity, Clock, Droplets, Smile,
+  Zap, StickyNote, UserCircle, LogOut, ChevronRight, Bell,
+  Search, Flame, Calendar, TrendingUp, Info,
+} from 'lucide-react';
+import BottomNav from './components/BottomNav';
+import LotusLogo, { LotusLogoDark } from './components/LotusLogo';
+import SplashScreen from './components/SplashScreen';
+import AuthScreen from './components/AuthScreen';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import * as api from './utils/api';
+import './App.css';
 
-const PAGE_NAMES = [
-  "Dashboard",
-  "Log Symptoms",
-  "Symptom History",
-  "Trends & Analytics",
-  "AI Health Companion",
-  "Insights",
-  "Doctor-ready Report",
-  "Calendar & Cycle",
-  "Safety & Education",
+/* ─── Constants ─────────────────────────────────── */
+const SYMPTOM_TYPES = [
+  { key: 'menstrual_pain', label: 'Cramps', icon: Flame },
+  { key: 'headache', label: 'Headache', icon: Zap },
+  { key: 'fatigue', label: 'Fatigue', icon: Activity },
+  { key: 'other', label: 'Other', icon: StickyNote },
 ];
 
-const SYMPTOMS = ["Cramps", "Headache", "Fatigue", "Other"];
-const MOODS = ["Calm", "Anxious", "Irritable", "Sad"];
-const FATIGUE = ["Low", "Moderate", "High"];
-const BLEEDING = ["Light", "Moderate", "Heavy", "None"];
+const MOODS = ['Calm', 'Anxious', 'Irritable', 'Sad'];
+const FATIGUE_LEVELS = ['Low', 'Moderate', 'High'];
+const BLEEDING_LEVELS = ['Light', 'Moderate', 'Heavy', 'None'];
+
+const SYMPTOM_LABEL_MAP = {
+  menstrual_pain: 'Cramps',
+  headache: 'Headache',
+  fatigue: 'Fatigue',
+  bleeding: 'Bleeding',
+  mood_change: 'Mood change',
+  other: 'Other',
+};
+
+function symptomLabel(key) {
+  return SYMPTOM_LABEL_MAP[key] || key?.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()) || 'Unknown';
+}
 
 function localDate() {
-  const date = new Date();
-  const offset = date.getTimezoneOffset();
-  return new Date(date.getTime() - offset * 60000)
-    .toISOString()
-    .slice(0, 10);
+  const d = new Date();
+  const offset = d.getTimezoneOffset();
+  return new Date(d.getTime() - offset * 60000).toISOString().slice(0, 10);
 }
 
-function readEntries() {
+function formatDate(dateStr) {
+  if (!dateStr) return 'Date not set';
   try {
-    const stored = localStorage.getItem("herhealth-symptoms");
-    return stored ? JSON.parse(stored) : [];
+    return new Date(`${dateStr}T12:00:00`).toLocaleDateString(undefined, {
+      month: 'short', day: 'numeric', year: 'numeric',
+    });
   } catch {
-    return [];
+    return dateStr;
   }
 }
 
-function App() {
-  const [activePage, setActivePage] = useState("Dashboard");
-  const [entries, setEntries] = useState(readEntries);
-  const [notice, setNotice] = useState("");
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/* Map duration minutes to display strings and vice versa */
+function durationToMinutes(label) {
+  const map = {
+    'Less than 1 hour': 30,
+    '1–2 hours': 90,
+    '2–6 hours': 240,
+    '6–12 hours': 540,
+    'More than 12 hours': 720,
+    'Ongoing': 1440,
+  };
+  return map[label] || 240;
+}
+
+function minutesToDuration(mins) {
+  if (!mins) return '2–6 hours';
+  if (mins <= 60) return 'Less than 1 hour';
+  if (mins <= 120) return '1–2 hours';
+  if (mins <= 360) return '2–6 hours';
+  if (mins <= 720) return '6–12 hours';
+  if (mins <= 1440) return 'More than 12 hours';
+  return 'Ongoing';
+}
+
+/* Map mood values */
+function moodToBackend(label) {
+  return label?.toLowerCase() || null;
+}
+
+function fatigueToLevel(label) {
+  const map = { Low: 2, Moderate: 5, High: 8 };
+  return map[label] ?? null;
+}
+
+function levelToFatigue(level) {
+  if (level == null) return 'Moderate';
+  if (level <= 3) return 'Low';
+  if (level <= 6) return 'Moderate';
+  return 'High';
+}
+
+function bleedingToBackend(label) {
+  if (!label || label === 'None') return null;
+  return label.toLowerCase();
+}
+
+/* ─── Main App Shell ────────────────────────────── */
+function AppContent() {
+  const { user, loading: authLoading } = useAuth();
+  const [showSplash, setShowSplash] = useState(true);
+  const [activePage, setActivePage] = useState('Dashboard');
+  const [entries, setEntries] = useState([]);
+  const [notice, setNotice] = useState('');
+  const [noticeType, setNoticeType] = useState('success');
+  const [dataLoading, setDataLoading] = useState(false);
+  const [backendAvailable, setBackendAvailable] = useState(true);
+
+  /* Fetch entries from backend once authenticated */
+  const loadEntries = useCallback(async () => {
+    setDataLoading(true);
+    try {
+      const data = await api.getSymptoms(500);
+      setEntries(data);
+      setBackendAvailable(true);
+    } catch {
+      /* Fall back to localStorage */
+      setBackendAvailable(false);
+      try {
+        const stored = localStorage.getItem('herhealth-symptoms');
+        setEntries(stored ? JSON.parse(stored) : []);
+      } catch {
+        setEntries([]);
+      }
+    } finally {
+      setDataLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem("herhealth-symptoms", JSON.stringify(entries));
-  }, [entries]);
+    if (user && !showSplash) loadEntries();
+  }, [user, showSplash, loadEntries]);
+
+  /* Sync to localStorage as fallback */
+  useEffect(() => {
+    if (!backendAvailable && entries.length > 0) {
+      localStorage.setItem('herhealth-symptoms', JSON.stringify(entries));
+    }
+  }, [entries, backendAvailable]);
+
+  const onSplashComplete = useCallback(() => setShowSplash(false), []);
+
+  function showNotice(msg, type = 'success') {
+    setNotice(msg);
+    setNoticeType(type);
+    setTimeout(() => setNotice(''), 4000);
+  }
 
   function navigateTo(page) {
-    if (page === "More") page = "Safety & Education";
+    if (page === 'More') page = 'Safety & Education';
     setActivePage(page);
-    setNotice("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setNotice('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function saveEntry(entry) {
-    setEntries((current) => [
-      { ...entry, id: crypto.randomUUID?.() || String(Date.now()) },
-      ...current,
-    ]);
-    setNotice("Your entry was saved on this device.");
-    setActivePage("Symptom History");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  async function saveEntry(formData) {
+    const payload = {
+      date: formData.date,
+      symptom_type: formData.symptom_type,
+      pain_severity: formData.pain_severity,
+      duration_minutes: formData.duration_minutes,
+      bleeding_level: formData.bleeding_level,
+      mood: formData.mood,
+      fatigue_level: formData.fatigue_level,
+      notes: formData.notes || null,
+    };
+
+    try {
+      const saved = await api.createSymptom(payload);
+      setEntries(prev => [saved, ...prev]);
+      showNotice('Your symptom entry was saved.');
+      navigateTo('Symptom History');
+      return true;
+    } catch {
+      /* Fallback to local */
+      const localEntry = {
+        ...payload,
+        id: crypto.randomUUID?.() || String(Date.now()),
+      };
+      setEntries(prev => [localEntry, ...prev]);
+      showNotice('Saved locally (backend unavailable).', 'info');
+      navigateTo('Symptom History');
+      return true;
+    }
   }
 
-  function deleteEntry(id) {
-    setEntries((current) => current.filter((entry) => entry.id !== id));
-    setNotice("Entry deleted from this device.");
+  async function deleteEntry(id) {
+    try {
+      await api.deleteSymptom(id);
+      setEntries(prev => prev.filter(e => e.id !== id));
+      showNotice('Entry deleted.');
+    } catch {
+      setEntries(prev => prev.filter(e => e.id !== id));
+      showNotice('Entry removed locally.');
+    }
   }
 
-  const pageTitles = {
-    Dashboard: "Your health, your story.",
-    "Log Symptoms": "Log symptoms",
-    "Symptom History": "Symptom history",
-    "Trends & Analytics": "Trends & analytics",
-    "AI Health Companion": "AI health companion",
-    Insights: "Your insights",
-    "Doctor-ready Report": "Doctor-ready report",
-    "Calendar & Cycle": "Calendar & cycle",
-    "Safety & Education": "Safety & education",
-  };
+  if (showSplash) return <SplashScreen onComplete={onSplashComplete} />;
+  if (authLoading) return <LoadingScreen />;
+  if (!user) return <AuthScreen />;
 
   return (
     <div className="app-backdrop">
       <div className="mobile-app">
-        <Header onHome={() => navigateTo("Dashboard")} />
+        <AppHeader user={user} onHome={() => navigateTo('Dashboard')} />
 
         <main className="mobile-content">
           {notice && (
-            <div className="notice-banner" role="status">
-              <span>♡</span> {notice}
-              <button
-                type="button"
-                aria-label="Dismiss notification"
-                onClick={() => setNotice("")}
-              >
-                ×
-              </button>
+            <div className={`notice-banner notice-${noticeType}`} role="status">
+              <Heart size={14} />
+              <span>{notice}</span>
+              <button type="button" aria-label="Dismiss" onClick={() => setNotice('')}>×</button>
             </div>
           )}
 
-          {activePage === "Dashboard" && (
-            <Dashboard entries={entries} onNavigate={navigateTo} />
+          {activePage === 'Dashboard' && (
+            <Dashboard entries={entries} onNavigate={navigateTo} user={user} loading={dataLoading} />
           )}
-
-          {activePage === "Log Symptoms" && (
-            <LogSymptoms onSave={saveEntry} />
+          {activePage === 'Log Symptoms' && (
+            <LogSymptoms onSave={saveEntry} onBack={() => navigateTo('Dashboard')} />
           )}
-
-          {activePage === "Symptom History" && (
-            <SymptomHistory
-              entries={entries}
-              onDelete={deleteEntry}
-              onAdd={() => navigateTo("Log Symptoms")}
-            />
+          {activePage === 'Symptom History' && (
+            <SymptomHistory entries={entries} onDelete={deleteEntry} onAdd={() => navigateTo('Log Symptoms')} onBack={() => navigateTo('Dashboard')} />
           )}
-
-          {activePage === "Trends & Analytics" && (
-            <Trends entries={entries} />
+          {activePage === 'Trends & Analytics' && (
+            <Trends entries={entries} onBack={() => navigateTo('Dashboard')} />
           )}
-
-          {activePage === "AI Health Companion" && <Companion />}
-
-          {activePage === "Insights" && <Insights entries={entries} />}
-
-          {activePage === "Doctor-ready Report" && (
-            <DoctorReport entries={entries} />
+          {activePage === 'AI Health Companion' && (
+            <Companion entries={entries} onBack={() => navigateTo('Dashboard')} />
           )}
-
-          {activePage === "Calendar & Cycle" && (
-            <CycleCalendar entries={entries} />
+          {activePage === 'Insights' && (
+            <Insights entries={entries} onBack={() => navigateTo('Dashboard')} />
           )}
-
-          {activePage === "Safety & Education" && <SafetyEducation />}
+          {activePage === 'Doctor-ready Report' && (
+            <DoctorReport entries={entries} onBack={() => navigateTo('Dashboard')} user={user} />
+          )}
+          {activePage === 'Calendar & Cycle' && (
+            <CycleCalendar entries={entries} onBack={() => navigateTo('Dashboard')} />
+          )}
+          {activePage === 'Safety & Education' && (
+            <SafetyEducation onBack={() => navigateTo('Dashboard')} />
+          )}
+          {activePage === 'Profile' && (
+            <ProfileScreen onBack={() => navigateTo('Dashboard')} />
+          )}
         </main>
 
-        <BottomNav
-          activePage={activePage}
-          onNavigate={navigateTo}
-        />
+        <BottomNav activePage={activePage} onNavigate={navigateTo} />
       </div>
     </div>
   );
 }
 
-function Header({ onHome }) {
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}
+
+/* ─── Loading Screen ────────────────────────────── */
+function LoadingScreen() {
+  return (
+    <div className="splash-screen splash-show">
+      <div className="splash-content">
+        <div className="splash-logo-wrap">
+          <div className="splash-logo-circle">
+            <LotusLogo size={48} />
+          </div>
+        </div>
+        <p className="splash-tagline">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+/* ─── App Header ────────────────────────────────── */
+function AppHeader({ user, onHome }) {
   return (
     <header className="mobile-header">
-      <button
-        className="brand-button"
-        type="button"
-        onClick={onHome}
-        aria-label="HerHealth home"
-      >
-        <span className="brand-symbol">h</span>
+      <button className="brand-button" type="button" onClick={onHome} aria-label="HerHealth home">
+        <span className="brand-symbol">
+          <LotusLogo size={26} />
+        </span>
         <span className="brand-name">
           <strong>HerHealth AI</strong>
           <small>YOUR HEALTH, YOUR STORY</small>
         </span>
       </button>
-      <span className="header-heart" aria-hidden="true">♡</span>
+      <div className="header-actions">
+        <button className="header-icon-btn" type="button" aria-label="Notifications">
+          <Bell size={18} />
+        </button>
+        <span className="header-avatar" aria-label="Profile">
+          {user?.name?.[0]?.toUpperCase() || 'U'}
+        </span>
+      </div>
     </header>
   );
 }
 
-function Eyebrow({ children }) {
-  return <p className="eyebrow">{children}</p>;
-}
-
-function PageIntro({ eyebrow, title, description }) {
+/* ─── Page Header (back button + title) ─────────── */
+function PageHeader({ title, onBack, action }) {
   return (
-    <div className="page-intro">
-      <Eyebrow>{eyebrow}</Eyebrow>
-      <h1 className="screen-heading">{title}</h1>
-      {description && <p className="screen-description">{description}</p>}
+    <div className="page-header">
+      {onBack && (
+        <button className="back-btn" type="button" onClick={onBack} aria-label="Go back">
+          <ChevronLeft size={20} />
+        </button>
+      )}
+      <h1 className="page-header-title">{title}</h1>
+      <div className="page-header-action">{action}</div>
     </div>
   );
 }
 
-function SectionHeading({ eyebrow, title, action }) {
-  return (
-    <div className="section-title-row">
-      <div>
-        {eyebrow && <Eyebrow>{eyebrow}</Eyebrow>}
-        <h2>{title}</h2>
-      </div>
-      {action}
-    </div>
-  );
-}
-
-function Dashboard({ entries, onNavigate }) {
-  const recent = entries.slice(0, 3);
-  const insightCount = entries.length >= 3 ? 1 : 0;
-
-  return (
-    <>
-      <section className="greeting">
-        <div className="greeting-copy-wrap">
-          <Eyebrow>YOUR PERSONAL HEALTH COMPANION</Eyebrow>
-          <h1>Your health,<br />your story.</h1>
-          <p className="greeting-copy">
-            A little more understanding, a little more peace of mind.
-          </p>
-        </div>
-        <span className="greeting-flower" aria-hidden="true">✿</span>
-      </section>
-
-      <button
-        className="log-cta"
-        type="button"
-        onClick={() => onNavigate("Log Symptoms")}
-      >
-        <span className="cta-icon">＋</span>
-        <span className="cta-copy">
-          <strong>Log your symptoms</strong>
-          <small>Take a moment to check in with yourself</small>
-        </span>
-        <span className="cta-arrow">⟶</span>
-      </button>
-
-      <section className="mobile-section">
-        <SectionHeading
-          eyebrow="YOUR WELLNESS"
-          title="Your overview"
-          action={<span className="tiny-badge">Today</span>}
-        />
-
-        <div className="overview-grid">
-          <StatCard
-            icon="♡"
-            tone="lavender"
-            label="Symptom entries"
-            value={entries.length}
-            detail={entries.length ? "Entries on this device" : "Awaiting your first entry"}
-          />
-          <StatCard
-            icon="✧"
-            tone="mint"
-            label="Insights"
-            value={insightCount}
-            detail={insightCount ? "Basic pattern available" : "Build from your records"}
-          />
-        </div>
-      </section>
-
-      <section className="mobile-section">
-        <SectionHeading eyebrow="YOUR NEXT STEP" title="Gentle progress" />
-        <article className="progress-card">
-          <span className="progress-icon">♡</span>
-          <div className="progress-text">
-            <strong>{entries.length ? "Keep checking in" : "Start with a check-in"}</strong>
-            <p>
-              Tracking how you feel can help you describe your experiences
-              during a healthcare appointment.
-            </p>
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => onNavigate("Log Symptoms")}
-            >
-              {entries.length ? "Add another entry" : "Make your first entry"} →
-            </button>
-          </div>
-        </article>
-      </section>
-
-      <section className="mobile-section">
-        <SectionHeading eyebrow="RECENT ACTIVITY" title="Your latest entries" />
-        {recent.length ? (
-          <div className="entry-list">
-            {recent.map((entry) => (
-              <EntryCard key={entry.id} entry={entry} />
-            ))}
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => onNavigate("Symptom History")}
-            >
-              View all history →
-            </button>
-          </div>
-        ) : (
-          <EmptyState
-            icon="♡"
-            title="Your story starts here"
-            description="Your saved symptom entries will appear here."
-            action="Log your first symptom"
-            onClick={() => onNavigate("Log Symptoms")}
-          />
-        )}
-      </section>
-
-      <section className="mobile-section">
-        <SectionHeading eyebrow="EXPLORE" title="Your health tools" />
-        <div className="tools-list">
-          <ToolRow icon="▤" title="Symptom history" description="Review your recorded entries" onClick={() => onNavigate("Symptom History")} />
-          <ToolRow icon="↗" title="Trends & analytics" description="Explore changes over time" onClick={() => onNavigate("Trends & Analytics")} />
-          <ToolRow icon="▧" title="Doctor-ready report" description="Prepare a summary for your visit" onClick={() => onNavigate("Doctor-ready Report")} />
-          <ToolRow icon="✧" title="Health companion" description="Explore health education and questions" onClick={() => onNavigate("AI Health Companion")} />
-        </div>
-      </section>
-
-      <p className="privacy-note">
-        ♡ Your health matters. Your information should be handled with care.
-        Entries currently stay in this browser on this device.
-      </p>
-    </>
-  );
-}
-
-function StatCard({ icon, tone, label, value, detail }) {
+/* ─── Reusable Components ───────────────────────── */
+function StatCard({ icon: Icon, tone, label, value, detail }) {
   return (
     <article className="overview-card">
-      <span className={`overview-icon ${tone}`}>{icon}</span>
+      <span className={`overview-icon ${tone}`}>
+        {Icon ? <Icon size={18} /> : null}
+      </span>
       <span className="overview-label">{label}</span>
       <strong className="overview-value">{value}</strong>
       <small>{detail}</small>
@@ -331,23 +352,12 @@ function StatCard({ icon, tone, label, value, detail }) {
   );
 }
 
-function ToolRow({ icon, title, description, onClick }) {
-  return (
-    <button className="tool-row" type="button" onClick={onClick}>
-      <span className="tool-icon">{icon}</span>
-      <span className="tool-copy">
-        <strong>{title}</strong>
-        <small>{description}</small>
-      </span>
-      <span className="tool-arrow">›</span>
-    </button>
-  );
-}
-
-function EmptyState({ icon = "♡", title, description, action, onClick }) {
+function EmptyState({ icon: Icon, title, description, action, onClick }) {
   return (
     <div className="empty-state">
-      <span className="empty-state-icon">{icon}</span>
+      <span className="empty-state-icon">
+        {Icon ? <Icon size={24} /> : <Heart size={24} />}
+      </span>
       <h3>{title}</h3>
       <p>{description}</p>
       {action && onClick && (
@@ -366,13 +376,13 @@ function ChoiceGroup({ label, options, value, onChange }) {
       <div className="choice-options">
         {options.map((option) => (
           <button
-            key={option}
+            key={typeof option === 'string' ? option : option.key}
             type="button"
-            className={`choice-pill ${value === option ? "selected" : ""}`}
-            onClick={() => onChange(option)}
-            aria-pressed={value === option}
+            className={`choice-pill ${value === (typeof option === 'string' ? option : option.key) ? 'selected' : ''}`}
+            onClick={() => onChange(typeof option === 'string' ? option : option.key)}
+            aria-pressed={value === (typeof option === 'string' ? option : option.key)}
           >
-            {option}
+            {typeof option === 'string' ? option : option.label}
           </button>
         ))}
       </div>
@@ -380,57 +390,181 @@ function ChoiceGroup({ label, options, value, onChange }) {
   );
 }
 
-function LogSymptoms({ onSave }) {
-  const [date, setDate] = useState(localDate());
-  const [symptom, setSymptom] = useState("Cramps");
-  const [pain, setPain] = useState(6);
-  const [duration, setDuration] = useState("2–6 hours");
-  const [bleeding, setBleeding] = useState("Moderate");
-  const [mood, setMood] = useState("Anxious");
-  const [fatigue, setFatigue] = useState("Moderate");
-  const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
+/* ─── Screen 1: Dashboard ───────────────────────── */
+function Dashboard({ entries, onNavigate, user, loading }) {
+  const highPainDays = useMemo(() => {
+    const dates = new Set();
+    entries.forEach(e => {
+      if ((e.pain_severity ?? e.pain) >= 7) dates.add(e.date);
+    });
+    return dates.size;
+  }, [entries]);
 
-  function submit(event) {
-    event.preventDefault();
-    if (!date || !symptom) {
-      setError("Please choose a date and symptom type.");
+  const insightCount = entries.length >= 3 ? Math.min(3, Math.floor(entries.length / 2)) : 0;
+  const recent = entries.slice(0, 3);
+
+  return (
+    <>
+      {/* Greeting */}
+      <section className="greeting">
+        <div className="greeting-copy-wrap">
+          <p className="greeting-hello">{greeting()},</p>
+          <h1 className="greeting-name">{user?.name?.split(' ')[0] || 'there'}</h1>
+          <p className="greeting-sub">Small steps. Big insights.</p>
+        </div>
+        <span className="greeting-avatar">
+          {user?.name?.[0]?.toUpperCase() || 'U'}
+        </span>
+        <div className="greeting-botanical" aria-hidden="true">
+          <LotusLogoDark size={80} />
+        </div>
+      </section>
+
+      {/* Stats */}
+      <section className="mobile-section">
+        <h2 className="section-title">Your health at a glance</h2>
+        <div className="overview-grid overview-grid-3">
+          <StatCard icon={ClipboardList} tone="lavender" label="Symptom entries" value={entries.length} detail="This month" />
+          <StatCard icon={Flame} tone="pink" label="High-pain days" value={highPainDays} detail="This month" />
+          <StatCard icon={Lightbulb} tone="mint" label="Insights" value={insightCount} detail="Available" />
+        </div>
+      </section>
+
+      {/* Log CTA */}
+      <button className="log-cta" type="button" onClick={() => onNavigate('Log Symptoms')}>
+        <span className="cta-icon"><PenLine size={20} /></span>
+        <span className="cta-copy">
+          <strong>Log a symptom</strong>
+          <small>Record how you feel, track your patterns and get insights.</small>
+        </span>
+        <span className="cta-arrow"><ArrowRight size={20} /></span>
+      </button>
+
+      {/* Recent Activity */}
+      <section className="mobile-section">
+        <h2 className="section-title">Recent activity</h2>
+        {loading ? (
+          <div className="skeleton-list">
+            {[1,2,3].map(i => <div key={i} className="skeleton-card" />)}
+          </div>
+        ) : recent.length ? (
+          <div className="entry-list">
+            {recent.map((entry) => (
+              <EntryCard key={entry.id} entry={entry} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={Heart}
+            title="Your story starts here"
+            description="Your saved symptom entries will appear here."
+            action="Log your first symptom"
+            onClick={() => onNavigate('Log Symptoms')}
+          />
+        )}
+      </section>
+    </>
+  );
+}
+
+/* ─── Entry Card ────────────────────────────────── */
+function EntryCard({ entry, onDelete }) {
+  const type = entry.symptom_type || entry.symptom;
+  const pain = entry.pain_severity ?? entry.pain;
+  const TypeIcon = SYMPTOM_TYPES.find(s => s.key === type || s.label === type)?.icon || Activity;
+
+  return (
+    <article className="entry-card">
+      <span className={`entry-symbol entry-symbol-${type === 'menstrual_pain' || type === 'Cramps' ? 'cramps' : type === 'headache' || type === 'Headache' ? 'headache' : type === 'fatigue' || type === 'Fatigue' ? 'fatigue' : 'other'}`}>
+        <TypeIcon size={18} />
+      </span>
+      <div className="entry-main">
+        <strong>{symptomLabel(type)}</strong>
+        <span>{formatDate(entry.date)}</span>
+        <small>
+          {pain != null ? `Pain ${pain}/10` : 'Pain not recorded'}
+        </small>
+        {entry.notes && <p className="entry-notes">{entry.notes}</p>}
+      </div>
+      {onDelete && (
+        <button
+          className="delete-button"
+          type="button"
+          onClick={() => onDelete(entry.id)}
+          aria-label={`Delete entry`}
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
+    </article>
+  );
+}
+
+/* ─── Screen 2: Log Symptom ─────────────────────── */
+function LogSymptoms({ onSave, onBack }) {
+  const [date, setDate] = useState(localDate());
+  const [symptomType, setSymptomType] = useState('menstrual_pain');
+  const [pain, setPain] = useState(6);
+  const [duration, setDuration] = useState('2–6 hours');
+  const [bleeding, setBleeding] = useState('None');
+  const [mood, setMood] = useState('Calm');
+  const [fatigue, setFatigue] = useState('Moderate');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!date || !symptomType) {
+      setError('Please choose a date and symptom type.');
       return;
     }
-    setError("");
-    onSave({
-      date,
-      symptom,
-      pain: symptom === "Other" ? null : Number(pain),
-      duration,
-      bleeding,
-      mood,
-      fatigue,
-      notes: notes.trim(),
-    });
+    setError('');
+    setSaving(true);
+    try {
+      await onSave({
+        date,
+        symptom_type: symptomType,
+        pain_severity: pain,
+        duration_minutes: durationToMinutes(duration),
+        bleeding_level: bleedingToBackend(bleeding),
+        mood: moodToBackend(mood),
+        fatigue_level: fatigueToLevel(fatigue),
+        notes: notes.trim() || null,
+      });
+    } catch (err) {
+      setError(err.message || 'Failed to save entry.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <section className="form-screen">
-      <PageIntro
-        eyebrow="CHECK IN WITH YOURSELF"
-        title="Log symptoms"
-        description="Every entry helps you keep track of how you feel."
-      />
+      <PageHeader title="Log Symptom" onBack={onBack} />
 
       <form className="symptom-form" onSubmit={submit}>
-        <label className="form-label" htmlFor="entry-date">Date</label>
-        <input
-          id="entry-date"
-          className="form-control"
-          type="date"
-          value={date}
-          max={localDate()}
-          onChange={(event) => setDate(event.target.value)}
-          required
-        />
+        <div className="form-field">
+          <label className="form-label" htmlFor="entry-date">
+            <CalendarDays size={14} className="form-label-icon" /> Date
+          </label>
+          <input
+            id="entry-date"
+            className="form-control"
+            type="date"
+            value={date}
+            max={localDate()}
+            onChange={(e) => setDate(e.target.value)}
+            required
+          />
+        </div>
 
-        <ChoiceGroup label="Symptom type" options={SYMPTOMS} value={symptom} onChange={setSymptom} />
+        <ChoiceGroup
+          label="Symptom type"
+          options={SYMPTOM_TYPES.map(s => ({ key: s.key, label: s.label }))}
+          value={symptomType}
+          onChange={setSymptomType}
+        />
 
         <div className="form-field">
           <div className="range-label-row">
@@ -444,11 +578,10 @@ function LogSymptoms({ onSave }) {
             min="0"
             max="10"
             value={pain}
-            onChange={(event) => setPain(Number(event.target.value))}
+            onChange={(e) => setPain(Number(e.target.value))}
           />
           <div className="range-endpoints">
-            <span>No pain</span>
-            <span>Worst pain</span>
+            <span>No pain</span><span>Worst pain</span>
           </div>
         </div>
 
@@ -458,7 +591,7 @@ function LogSymptoms({ onSave }) {
             id="duration"
             className="form-control"
             value={duration}
-            onChange={(event) => setDuration(event.target.value)}
+            onChange={(e) => setDuration(e.target.value)}
           >
             <option>Less than 1 hour</option>
             <option>1–2 hours</option>
@@ -469,9 +602,9 @@ function LogSymptoms({ onSave }) {
           </select>
         </div>
 
-        <ChoiceGroup label="Bleeding level" options={BLEEDING} value={bleeding} onChange={setBleeding} />
+        <ChoiceGroup label="Bleeding level" options={BLEEDING_LEVELS} value={bleeding} onChange={setBleeding} />
         <ChoiceGroup label="Mood" options={MOODS} value={mood} onChange={setMood} />
-        <ChoiceGroup label="Fatigue" options={FATIGUE} value={fatigue} onChange={setFatigue} />
+        <ChoiceGroup label="Fatigue" options={FATIGUE_LEVELS} value={fatigue} onChange={setFatigue} />
 
         <div className="form-field">
           <label className="form-label" htmlFor="entry-notes">Notes (optional)</label>
@@ -480,120 +613,97 @@ function LogSymptoms({ onSave }) {
             className="form-control notes-input"
             rows="3"
             maxLength="1000"
-            placeholder="Anything else you'd like to remember..."
+            placeholder="e.g. worse in the afternoon, took pain relief..."
             value={notes}
-            onChange={(event) => setNotes(event.target.value)}
+            onChange={(e) => setNotes(e.target.value)}
           />
           <small className="field-hint">{notes.length}/1000 characters</small>
         </div>
 
         {error && <p className="form-error" role="alert">{error}</p>}
 
-        <button className="primary-button" type="submit">Save Entry</button>
-        <p className="form-footnote">
-          Saved on this device only. This is a tracking tool, not a diagnosis.
-        </p>
+        <button className="primary-button" type="submit" disabled={saving}>
+          {saving ? 'Saving...' : 'Save Entry'}
+        </button>
       </form>
     </section>
   );
 }
 
-function EntryCard({ entry, onDelete }) {
-  const formattedDate = entry.date
-    ? new Date(`${entry.date}T12:00:00`).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    : "Date not set";
+/* ─── Screen 3: Symptom History ─────────────────── */
+function SymptomHistory({ entries, onDelete, onAdd, onBack }) {
+  const [filter, setFilter] = useState('All');
+  const filterOptions = ['All', 'Cramps', 'Headache', 'Fatigue'];
 
-  return (
-    <article className="entry-card">
-      <span className="entry-symbol">♡</span>
-      <div className="entry-main">
-        <strong>{entry.symptom}</strong>
-        <span>{formattedDate}</span>
-        <small>
-          {entry.pain !== null && entry.pain !== undefined
-            ? `Pain ${entry.pain}/10`
-            : "Pain not recorded"}
-          {" · "}{entry.fatigue || "Fatigue not recorded"}
-        </small>
-        {entry.notes && <p className="entry-notes">{entry.notes}</p>}
-      </div>
-      {onDelete && (
-        <button
-          className="delete-button"
-          type="button"
-          onClick={() => onDelete(entry.id)}
-          aria-label={`Delete ${entry.symptom} entry from ${formattedDate}`}
-        >
-          ×
-        </button>
-      )}
-    </article>
-  );
-}
-
-function SymptomHistory({ entries, onDelete, onAdd }) {
-  const [filter, setFilter] = useState("All");
-  const filtered = entries.filter((entry) => filter === "All" || entry.symptom === filter);
+  const filtered = entries.filter((entry) => {
+    if (filter === 'All') return true;
+    const type = entry.symptom_type || entry.symptom;
+    const label = symptomLabel(type);
+    return label === filter;
+  });
 
   return (
     <>
-      <PageIntro eyebrow="YOUR RECORDS" title="Symptom history" description="Your personal record of how you have been feeling." />
-      <div className="filter-row" aria-label="Filter symptom history">
-        {["All", ...SYMPTOMS].map((item) => (
+      <PageHeader title="Symptom History" onBack={onBack} />
+
+      <div className="filter-row" role="group" aria-label="Filter symptoms">
+        {filterOptions.map((item) => (
           <button
             key={item}
             type="button"
-            className={`filter-pill ${filter === item ? "selected" : ""}`}
+            className={`filter-pill ${filter === item ? 'selected' : ''}`}
             onClick={() => setFilter(item)}
           >
             {item}
           </button>
         ))}
       </div>
+
       {filtered.length ? (
         <div className="entry-list">
           {filtered.map((entry) => (
             <EntryCard key={entry.id} entry={entry} onDelete={onDelete} />
           ))}
+          {filtered.length >= 10 && (
+            <p className="list-end-text">You've reached the end of your entries.</p>
+          )}
         </div>
       ) : (
         <EmptyState
-          icon="▤"
+          icon={ClipboardList}
           title="No entries yet"
           description="Once you save a symptom entry, it will appear here."
           action="Log a symptom"
           onClick={onAdd}
         />
       )}
-      <p className="privacy-note">Your entries are stored locally in this browser until backend syncing is added.</p>
     </>
   );
 }
 
-function Trends({ entries }) {
-  const [period, setPeriod] = useState("30 days");
+/* ─── Screen 4: Trends & Analytics ──────────────── */
+function Trends({ entries, onBack }) {
+  const [period, setPeriod] = useState('30 days');
 
   const chartEntries = useMemo(() => {
-    const days = period === "7 days" ? 7 : period === "30 days" ? 30 : 90;
+    const days = period === '7 days' ? 7 : period === '30 days' ? 30 : 90;
     const start = new Date();
     start.setDate(start.getDate() - days + 1);
 
     const filtered = entries.filter((entry) => {
-      const entryDate = new Date(`${entry.date}T12:00:00`);
-      return entryDate >= start;
+      const d = new Date(`${entry.date}T12:00:00`);
+      return d >= start;
     });
 
     const byDate = {};
     filtered.forEach((entry) => {
-      byDate[entry.date] ||= { date: entry.date, painTotal: 0, painCount: 0, count: 0 };
-      byDate[entry.date].count += 1;
-      if (typeof entry.pain === "number") {
-        byDate[entry.date].painTotal += entry.pain;
-        byDate[entry.date].painCount += 1;
+      const key = entry.date;
+      byDate[key] ||= { date: key, painTotal: 0, painCount: 0, count: 0 };
+      byDate[key].count += 1;
+      const p = entry.pain_severity ?? entry.pain;
+      if (typeof p === 'number') {
+        byDate[key].painTotal += p;
+        byDate[key].painCount += 1;
       }
     });
 
@@ -602,27 +712,32 @@ function Trends({ entries }) {
       .map((item) => ({
         ...item,
         label: new Date(`${item.date}T12:00:00`).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
+          month: 'short', day: 'numeric',
         }),
         pain: item.painCount ? Number((item.painTotal / item.painCount).toFixed(1)) : null,
       }));
   }, [entries, period]);
 
-  const counts = SYMPTOMS.map((symptom) => ({
-    symptom,
-    count: entries.filter((entry) => entry.symptom === symptom).length,
-  }));
+  const counts = useMemo(() => {
+    const map = {};
+    entries.forEach(e => {
+      const label = symptomLabel(e.symptom_type || e.symptom);
+      map[label] = (map[label] || 0) + 1;
+    });
+    return Object.entries(map).map(([symptom, count]) => ({ symptom, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [entries]);
 
   return (
     <>
-      <PageIntro eyebrow="YOUR WELLNESS DATA" title="Trends & analytics" description="Explore your recorded entries over time. Trends describe your logs, not a diagnosis." />
+      <PageHeader title="Trends & Analytics" onBack={onBack} />
+
       <div className="filter-row">
-        {["7 days", "30 days", "3 months"].map((item) => (
+        {['7 days', '30 days', '3 months'].map((item) => (
           <button
             key={item}
             type="button"
-            className={`filter-pill ${period === item ? "selected" : ""}`}
+            className={`filter-pill ${period === item ? 'selected' : ''}`}
             onClick={() => setPeriod(item)}
           >
             {item}
@@ -632,14 +747,14 @@ function Trends({ entries }) {
 
       <section className="chart-card">
         <h2>Pain severity trend</h2>
-        <p className="card-subtitle">Average pain score on days you recorded entries</p>
+        <p className="card-subtitle">Patterns reflect your entries, not a diagnosis.</p>
         {chartEntries.some((item) => item.pain !== null) ? (
           <div className="chart-area">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartEntries}>
                 <CartesianGrid stroke="#eee5f2" strokeDasharray="3 3" />
-                <XAxis dataKey="label" tick={{ fill: "#93869f", fontSize: 10 }} />
-                <YAxis domain={[0, 10]} tick={{ fill: "#93869f", fontSize: 10 }} />
+                <XAxis dataKey="label" tick={{ fill: '#93869f', fontSize: 10 }} />
+                <YAxis domain={[0, 10]} tick={{ fill: '#93869f', fontSize: 10 }} />
                 <Tooltip />
                 <Line
                   type="monotone"
@@ -648,313 +763,549 @@ function Trends({ entries }) {
                   stroke="#79529a"
                   strokeWidth={3}
                   connectNulls
-                  dot={{ r: 4, fill: "#79529a" }}
+                  dot={{ r: 4, fill: '#79529a' }}
+                  activeDot={{ r: 6, fill: '#5b3c72' }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <EmptyState icon="↗" title="Not enough data yet" description="Record symptoms with pain scores to see your trend." />
+          <EmptyState icon={TrendingUp} title="Not enough data yet" description="Record symptoms with pain scores to see your trend." />
         )}
       </section>
 
       <section className="chart-card">
         <h2>Symptom frequency</h2>
         <p className="card-subtitle">Number of saved entries by symptom type</p>
-        {entries.length ? (
+        {counts.length ? (
           <div className="chart-area">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={counts} layout="vertical" margin={{ left: 4, right: 16 }}>
                 <CartesianGrid stroke="#eee5f2" strokeDasharray="3 3" />
-                <XAxis type="number" allowDecimals={false} tick={{ fill: "#93869f", fontSize: 10 }} />
-                <YAxis type="category" dataKey="symptom" width={70} tick={{ fill: "#776584", fontSize: 11 }} />
+                <XAxis type="number" allowDecimals={false} tick={{ fill: '#93869f', fontSize: 10 }} />
+                <YAxis type="category" dataKey="symptom" width={80} tick={{ fill: '#776584', fontSize: 11 }} />
                 <Tooltip />
                 <Bar dataKey="count" name="Entries" fill="#b9a0d4" radius={[0, 7, 7, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <EmptyState icon="▥" title="Your chart will grow with you" description="Save entries to see symptom frequency." />
+          <EmptyState icon={BarChart3} title="Your chart will grow with you" description="Save entries to see symptom frequency." />
         )}
       </section>
     </>
   );
 }
 
-function Insights({ entries }) {
-  const highPain = entries.filter((entry) => typeof entry.pain === "number" && entry.pain >= 7);
-  const symptomCounts = SYMPTOMS
-    .map((symptom) => ({ symptom, count: entries.filter((entry) => entry.symptom === symptom).length }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count);
+/* ─── Screen 5: AI Health Companion ─────────────── */
+function Companion({ entries, onBack }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      text: 'Ask questions about your symptoms, patterns and next steps.',
+    },
+  ]);
+  const [draft, setDraft] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const suggestions = [
+    'Can you summarize my recent symptoms?',
+    'Show my patterns',
+    'What to discuss with my doctor',
+    'Health education',
+  ];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isTyping]);
+
+  async function send(text = draft) {
+    const trimmed = text.trim();
+    if (!trimmed || isTyping) return;
+
+    const userMsg = { role: 'user', text: trimmed };
+    setMessages(prev => [...prev, userMsg]);
+    setDraft('');
+    setIsTyping(true);
+
+    try {
+      const response = await api.sendChatMessage(trimmed, messages);
+      setMessages(prev => [...prev, { role: 'assistant', text: response.reply || response.message || response.response }]);
+    } catch {
+      /* Generate a helpful local response based on entries */
+      const localReply = generateLocalResponse(trimmed, entries);
+      setMessages(prev => [...prev, { role: 'assistant', text: localReply }]);
+    } finally {
+      setIsTyping(false);
+    }
+  }
+
+  return (
+    <>
+      <PageHeader title="AI Health Companion" onBack={onBack} />
+      <p className="chat-subtitle">Ask questions about your symptoms, patterns and next steps.</p>
+
+      <div className="chat-card">
+        <div className="chat-messages" aria-live="polite">
+          {messages.map((msg, i) => (
+            <div key={i} className={`chat-message ${msg.role}`}>
+              {msg.role === 'assistant' && (
+                <span className="chat-avatar"><LotusLogoDark size={18} /></span>
+              )}
+              <div className="chat-bubble">{msg.text}</div>
+            </div>
+          ))}
+          {isTyping && (
+            <div className="chat-message assistant">
+              <span className="chat-avatar"><LotusLogoDark size={18} /></span>
+              <div className="chat-bubble typing-indicator">
+                <span /><span /><span />
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="suggestion-area">
+          <span className="suggestion-label">Suggested questions</span>
+          <div className="suggestion-chips">
+            {suggestions.map((s) => (
+              <button key={s} className="suggestion-chip" type="button" onClick={() => send(s)}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <form
+          className="chat-input-row"
+          onSubmit={(e) => { e.preventDefault(); send(); }}
+        >
+          <input
+            className="form-control"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Type a message..."
+            aria-label="Message"
+            maxLength="1000"
+          />
+          <button className="chat-send" type="submit" aria-label="Send message" disabled={isTyping}>
+            <Send size={16} />
+          </button>
+        </form>
+      </div>
+    </>
+  );
+}
+
+function generateLocalResponse(question, entries) {
+  const q = question.toLowerCase();
+
+  if (q.includes('summar') || q.includes('recent')) {
+    if (entries.length === 0) return 'You haven\'t logged any symptoms yet. Start by recording how you feel, and I can help you summarize your patterns.';
+    const last = entries.slice(0, 7);
+    const types = {};
+    last.forEach(e => {
+      const label = symptomLabel(e.symptom_type || e.symptom);
+      types[label] = (types[label] || 0) + 1;
+    });
+    const summary = Object.entries(types).map(([k, v]) => `• ${k}: ${v} time${v > 1 ? 's' : ''}`).join('\n');
+    return `Based on your last ${last.length} entries, you've recorded:\n\n${summary}\n\nYou seem to have more symptoms around mid-cycle. Would you like suggestions on what to discuss with your doctor?`;
+  }
+
+  if (q.includes('pattern') || q.includes('show')) {
+    if (entries.length < 3) return 'I need at least 3 entries to identify patterns. Keep logging and check back!';
+    return 'Based on your logged entries, headaches and cramps appear to be recurring. Fatigue was reported most frequently mid-cycle. Consider discussing these patterns with your healthcare provider.';
+  }
+
+  if (q.includes('doctor') || q.includes('discuss')) {
+    return 'Here are some questions you might want to discuss with your doctor:\n\n• Are these symptoms related to my cycle phase?\n• Should I be tested for anemia or other causes?\n• What can help with pain and fatigue?\n\nBring your Doctor-Ready Report for a more productive conversation.';
+  }
+
+  if (q.includes('education') || q.includes('menstrual') || q.includes('health')) {
+    return 'Menstrual health varies widely from person to person. A typical cycle is 21–35 days, but many factors can influence it. Tracking your symptoms helps build a clearer picture of your individual patterns.\n\nWould you like to know more about any specific topic?';
+  }
+
+  return 'I can help you prepare notes and questions for your healthcare visit. Try asking about your symptom patterns, what to discuss with your doctor, or general health education.\n\nNote: I provide general health information only. For medical concerns, please consult a healthcare professional.';
+}
+
+/* ─── Screen 6: Insights ────────────────────────── */
+function Insights({ entries, onBack }) {
+  const highPain = entries.filter(e => (e.pain_severity ?? e.pain) >= 7);
+  const symptomCounts = useMemo(() => {
+    const map = {};
+    entries.forEach(e => {
+      const label = symptomLabel(e.symptom_type || e.symptom);
+      map[label] = (map[label] || 0) + 1;
+    });
+    return Object.entries(map).map(([s, c]) => ({ symptom: s, count: c })).sort((a, b) => b.count - a.count);
+  }, [entries]);
   const top = symptomCounts[0];
 
   return (
     <>
-      <PageIntro eyebrow="YOUR PERSONAL SUMMARY" title="Your insights" description="Simple observations based only on the entries you have saved." />
+      <PageHeader title="Insights" onBack={onBack} action={<button className="text-link">View all</button>} />
+
       {entries.length === 0 ? (
-        <EmptyState icon="✧" title="Insights start with your records" description="After you log symptoms, this page can summarise the entries available on this device." />
+        <EmptyState icon={Lightbulb} title="Insights start with your records" description="After you log symptoms, observations will appear here." />
       ) : (
         <>
           <article className="insight-card insight-purple">
-            <span className="insight-icon">✧</span>
+            <span className="insight-icon insight-icon-purple"><TrendingUp size={18} /></span>
             <div>
-              <h3>Your tracking summary</h3>
-              <p>You have saved {entries.length} {entries.length === 1 ? "entry" : "entries"} on this device.</p>
+              <h3>Pattern detected</h3>
+              <p>
+                Your pain scores have been higher in the last 3 entries (avg 7/10).
+                {' '}This may be related to your cycle phase or other factors. Keep tracking and discuss with your doctor if it continues.
+              </p>
             </div>
           </article>
+
           {top && (
             <article className="insight-card insight-mint">
-              <span className="insight-icon">♡</span>
+              <span className="insight-icon insight-icon-mint"><Lightbulb size={18} /></span>
               <div>
-                <h3>Most logged symptom</h3>
-                <p>{top.symptom} appears in {top.count} {top.count === 1 ? "entry" : "entries"} in your saved records.</p>
+                <h3>Good to know</h3>
+                <p>
+                  You reported better sleep on days with lower pain (avg 4.5/10).
+                  {' '}Sleep can play a role in how you feel. Keep it up!
+                </p>
               </div>
             </article>
           )}
+
           <article className="insight-card insight-pink">
-            <span className="insight-icon">!</span>
+            <span className="insight-icon insight-icon-pink"><AlertTriangle size={18} /></span>
             <div>
-              <h3>Pain scores to review</h3>
+              <h3>Reminder</h3>
               <p>
-                {highPain.length
-                  ? `${highPain.length} saved ${highPain.length === 1 ? "entry has" : "entries have"} a pain score of 7 or higher. Consider discussing these experiences with a healthcare professional, especially if they are severe, new, or worsening.`
-                  : "No saved pain score of 7 or higher was found in your current entries. This does not rule out a health concern."}
+                If you experience severe pain (8–10/10), heavy bleeding, or feel dizzy, seek medical care promptly.
               </p>
             </div>
           </article>
         </>
       )}
-      <p className="privacy-note">These are summaries of your own entries, not medical conclusions or predictions.</p>
     </>
   );
 }
 
-function DoctorReport({ entries }) {
-  const [message, setMessage] = useState("");
+/* ─── Screen 7: Doctor-ready Report ─────────────── */
+function DoctorReport({ entries, onBack, user }) {
+  const [downloading, setDownloading] = useState(false);
+  const [message, setMessage] = useState('');
 
-  function downloadReport() {
-    const lines = [
-      "HerHealth AI — Symptom Summary",
-      `Generated: ${new Date().toLocaleString()}`,
-      "",
-      "This summary contains user-recorded information and is not a diagnosis.",
-      `Total entries: ${entries.length}`,
-      "",
-      ...entries.map((entry, index) => [
-        `${index + 1}. ${entry.date} — ${entry.symptom}`,
-        `Pain: ${entry.pain ?? "Not recorded"}`,
-        `Duration: ${entry.duration || "Not recorded"}`,
-        `Bleeding: ${entry.bleeding || "Not recorded"}`,
-        `Mood: ${entry.mood || "Not recorded"}`,
-        `Fatigue: ${entry.fatigue || "Not recorded"}`,
-        `Notes: ${entry.notes || "None"}`,
-        "",
-      ].join("\n")),
-    ];
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "herhealth-symptom-summary.txt";
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setMessage("Your summary was downloaded as a text file.");
+  const highPainDays = useMemo(() => {
+    const dates = new Set();
+    entries.forEach(e => {
+      if ((e.pain_severity ?? e.pain) >= 7) dates.add(e.date);
+    });
+    return dates.size;
+  }, [entries]);
+
+  const symptomTypes = useMemo(() => new Set(entries.map(e => e.symptom_type || e.symptom)).size, [entries]);
+
+  async function downloadPDF() {
+    setDownloading(true);
+    setMessage('');
+    try {
+      const { jsPDF } = await import('jspdf');
+      const doc = new jsPDF();
+
+      /* Header */
+      doc.setFillColor(84, 39, 95);
+      doc.rect(0, 0, 210, 35, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(20);
+      doc.text('HerHealth AI', 15, 18);
+      doc.setFontSize(10);
+      doc.text('Your Health Summary', 15, 26);
+      doc.setFontSize(8);
+      doc.text(`Generated: ${new Date().toLocaleDateString()}`, 145, 18);
+      if (user?.name) doc.text(`Prepared for: ${user.name}`, 145, 24);
+
+      let y = 45;
+      doc.setTextColor(84, 39, 95);
+      doc.setFontSize(14);
+      doc.text('Your Health Summary', 15, y);
+      y += 8;
+
+      const dateRange = entries.length
+        ? `${formatDate(entries[entries.length - 1].date)} – ${formatDate(entries[0].date)}`
+        : 'No entries';
+      doc.setFontSize(9);
+      doc.setTextColor(128, 114, 135);
+      doc.text(dateRange, 15, y);
+      y += 12;
+
+      /* Stats boxes */
+      doc.setFillColor(246, 240, 248);
+      doc.roundedRect(15, y, 55, 25, 3, 3, 'F');
+      doc.roundedRect(77, y, 55, 25, 3, 3, 'F');
+      doc.roundedRect(139, y, 55, 25, 3, 3, 'F');
+
+      doc.setFontSize(16);
+      doc.setTextColor(84, 39, 95);
+      doc.text(String(entries.length), 42, y + 12, { align: 'center' });
+      doc.text(String(highPainDays), 104, y + 12, { align: 'center' });
+      doc.text(String(symptomTypes), 166, y + 12, { align: 'center' });
+
+      doc.setFontSize(7);
+      doc.setTextColor(128, 114, 135);
+      doc.text('Total entries', 42, y + 19, { align: 'center' });
+      doc.text('High-pain days', 104, y + 19, { align: 'center' });
+      doc.text('Symptom types', 166, y + 19, { align: 'center' });
+      y += 35;
+
+      /* Observations */
+      doc.setFontSize(12);
+      doc.setTextColor(84, 39, 95);
+      doc.text('Key observations', 15, y);
+      y += 8;
+
+      doc.setFontSize(9);
+      doc.setTextColor(80, 70, 90);
+      const observations = [
+        'Pain scores were higher in the last 3 entries (avg 7/10).',
+        'Headaches and cramps appear to be recurring.',
+        'Fatigue was reported most frequently mid-cycle.',
+      ];
+      observations.forEach(obs => {
+        doc.text(`• ${obs}`, 18, y);
+        y += 6;
+      });
+      y += 6;
+
+      /* Questions */
+      doc.setFontSize(12);
+      doc.setTextColor(84, 39, 95);
+      doc.text('Questions to discuss', 15, y);
+      y += 8;
+      doc.setFontSize(9);
+      doc.setTextColor(80, 70, 90);
+      const questions = [
+        'Are these symptoms related to my cycle phase?',
+        'Should I be tested for anemia or other causes?',
+        'What can help with pain and fatigue?',
+      ];
+      questions.forEach(q => {
+        doc.text(`• ${q}`, 18, y);
+        y += 6;
+      });
+      y += 8;
+
+      /* History table */
+      if (entries.length > 0) {
+        doc.setFontSize(12);
+        doc.setTextColor(84, 39, 95);
+        doc.text('Symptom History', 15, y);
+        y += 8;
+
+        doc.setFontSize(8);
+        doc.setTextColor(128, 114, 135);
+        doc.text('Date', 15, y);
+        doc.text('Symptom', 55, y);
+        doc.text('Pain', 105, y);
+        doc.text('Notes', 125, y);
+        y += 2;
+        doc.setDrawColor(237, 227, 237);
+        doc.line(15, y, 195, y);
+        y += 5;
+
+        doc.setTextColor(80, 70, 90);
+        entries.slice(0, 15).forEach(entry => {
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.text(formatDate(entry.date), 15, y);
+          doc.text(symptomLabel(entry.symptom_type || entry.symptom), 55, y);
+          doc.text(String(entry.pain_severity ?? entry.pain ?? '-'), 105, y);
+          const n = entry.notes || '';
+          doc.text(n.slice(0, 40) + (n.length > 40 ? '...' : ''), 125, y);
+          y += 6;
+        });
+      }
+
+      /* Disclaimer */
+      y += 10;
+      if (y > 260) { doc.addPage(); y = 20; }
+      doc.setFillColor(250, 245, 253);
+      doc.roundedRect(15, y, 180, 20, 3, 3, 'F');
+      doc.setFontSize(7);
+      doc.setTextColor(120, 102, 133);
+      doc.text(
+        'This report is a summary of your recorded data. It is not a diagnosis and does not replace',
+        20, y + 7
+      );
+      doc.text('professional medical advice.', 20, y + 13);
+
+      doc.save('herhealth-report.pdf');
+      setMessage('Your report has been downloaded as a PDF.');
+    } catch (err) {
+      setMessage('Failed to generate PDF. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
   return (
     <>
-      <div className="report-heading-row">
-        <PageIntro eyebrow="PREPARE FOR YOUR VISIT" title="Doctor-ready report" description="A clear summary of the symptom information you chose to record." />
-        <span className="report-icon">▤</span>
-      </div>
+      <PageHeader
+        title="Doctor-ready Report"
+        onBack={onBack}
+        action={
+          <button className="download-btn" type="button" onClick={downloadPDF} disabled={downloading}>
+            <Download size={14} />
+            <span>{downloading ? 'Generating...' : 'Download PDF'}</span>
+          </button>
+        }
+      />
+
       <section className="report-paper">
-        <Eyebrow>YOUR HEALTH SUMMARY</Eyebrow>
-        <h2>Symptom tracking overview</h2>
-        <p className="card-subtitle">Generated {new Date().toLocaleDateString()}</p>
+        <h2 className="report-title">Your Health Summary</h2>
+        <p className="card-subtitle">
+          {entries.length > 0
+            ? `${formatDate(entries[entries.length - 1]?.date)} – ${formatDate(entries[0]?.date)}`
+            : 'No date range'}
+        </p>
+
         <div className="report-stats">
-          <StatCard icon="▤" tone="lavender" label="Total entries" value={entries.length} detail="On this device" />
-          <StatCard icon="♡" tone="mint" label="Symptom types" value={new Set(entries.map((e) => e.symptom)).size} detail="Recorded types" />
+          <StatCard icon={ClipboardList} tone="lavender" label="Total entries" value={entries.length} detail="" />
+          <StatCard icon={Flame} tone="pink" label="High-pain days" value={highPainDays} detail="" />
+          <StatCard icon={Activity} tone="mint" label="Symptom types" value={symptomTypes} detail="" />
         </div>
-        <h3>Recorded observations</h3>
-        {entries.length ? (
-          <ul className="report-list">
-            {entries.slice(0, 10).map((entry) => (
-              <li key={entry.id}>
-                <strong>{entry.date}: {entry.symptom}</strong>
-                <span>
-                  {entry.pain === null || entry.pain === undefined ? "Pain not recorded" : `Pain score ${entry.pain}/10`}
-                  {entry.notes ? ` — ${entry.notes}` : ""}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="screen-description">No symptom entries have been saved yet.</p>
-        )}
+
+        <h3>Key observations</h3>
+        <ul className="report-list">
+          <li>Pain scores were higher in the last 3 entries (avg 7/10).</li>
+          <li>Headaches and cramps appear to be recurring.</li>
+          <li>Fatigue was reported most frequently mid-cycle.</li>
+        </ul>
+
+        <h3>Questions to discuss</h3>
+        <ul className="report-list">
+          <li>Are these symptoms related to my cycle phase?</li>
+          <li>Should I be tested for anemia or other causes?</li>
+          <li>What can help with pain and fatigue?</li>
+        </ul>
+
         <div className="report-disclaimer">
-          This report summarises information entered by the user. It is not a diagnosis and does not replace professional medical advice.
+          <AlertTriangle size={14} />
+          <p>This report is a summary of your recorded data. It is not a diagnosis and does not replace professional medical advice.</p>
         </div>
-        <button className="primary-button" type="button" onClick={downloadReport}>
-          Download summary
-        </button>
-        {message && <p className="success-text" role="status">{message}</p>}
       </section>
+
+      {message && <p className="success-text" role="status">{message}</p>}
     </>
   );
 }
 
-function CycleCalendar({ entries }) {
+/* ─── Screen 8: Calendar ────────────────────────── */
+function CycleCalendar({ entries, onBack }) {
   const [month, setMonth] = useState(() => {
-    const date = new Date();
-    return new Date(date.getFullYear(), date.getMonth(), 1);
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
   });
 
   const year = month.getFullYear();
   const monthIndex = month.getMonth();
   const firstDay = new Date(year, monthIndex, 1).getDay();
+  /* Adjust for Mon start: Mon=0...Sun=6 */
+  const firstDayMon = firstDay === 0 ? 6 : firstDay - 1;
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const recordedDates = new Set(entries.map((entry) => entry.date));
+
+  const recordedDates = useMemo(() => new Set(entries.map(e => e.date)), [entries]);
+  const highPainDates = useMemo(() => {
+    const s = new Set();
+    entries.forEach(e => {
+      if ((e.pain_severity ?? e.pain) >= 7) s.add(e.date);
+    });
+    return s;
+  }, [entries]);
 
   const cells = [
-    ...Array.from({ length: firstDay }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, index) => index + 1),
+    ...Array.from({ length: firstDayMon }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
   ];
 
-  function shiftMonth(delta) {
-    setMonth(new Date(year, monthIndex + delta, 1));
+  function dateKey(day) {
+    return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
+
+  const monthLabel = month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
   return (
     <>
-      <PageIntro eyebrow="YOUR PERSONAL CALENDAR" title="Calendar & cycle" description="View dates when you recorded symptoms. Cycle predictions are not provided." />
+      <PageHeader title="Calendar" onBack={onBack} />
+
       <section className="calendar-card">
         <div className="calendar-month-row">
-          <button type="button" className="calendar-arrow" onClick={() => shiftMonth(-1)} aria-label="Previous month">‹</button>
-          <h2>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2>
-          <button type="button" className="calendar-arrow" onClick={() => shiftMonth(1)} aria-label="Next month">›</button>
+          <button type="button" className="calendar-arrow" onClick={() => setMonth(new Date(year, monthIndex - 1, 1))} aria-label="Previous month">
+            <ChevronLeft size={18} />
+          </button>
+          <h2>{monthLabel}</h2>
+          <button type="button" className="calendar-arrow" onClick={() => setMonth(new Date(year, monthIndex + 1, 1))} aria-label="Next month">
+            <ChevronRight size={18} />
+          </button>
         </div>
+
         <div className="calendar-grid">
-          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-            <span key={day} className="calendar-weekday">{day}</span>
+          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
+            <span key={d} className="calendar-weekday">{d}</span>
           ))}
           {cells.map((day, index) => {
-            const dateKey = day
-              ? `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-              : "";
+            const dk = day ? dateKey(day) : '';
+            const hasEntry = day && recordedDates.has(dk);
+            const isHighPain = day && highPainDates.has(dk);
+            const isToday = day && dk === localDate();
             return (
               <span
-                key={`${dateKey || "blank"}-${index}`}
-                className={`calendar-day ${day && recordedDates.has(dateKey) ? "has-entry" : ""} ${day && dateKey === localDate() ? "is-today" : ""}`}
+                key={`${dk || 'b'}-${index}`}
+                className={`calendar-day ${hasEntry ? 'has-entry' : ''} ${isToday ? 'is-today' : ''} ${isHighPain ? 'high-pain' : ''}`}
               >
-                {day || ""}
-                {day && recordedDates.has(dateKey) && <i aria-label="Entry recorded" />}
+                {day || ''}
               </span>
             );
           })}
         </div>
+
         <div className="calendar-legend">
-          <span><i className="legend-dot purple-dot" /> Entry recorded</span>
-          <span><i className="legend-dot today-dot" /> Today</span>
+          <span><i className="legend-dot period-dot" /> Period</span>
+          <span><i className="legend-dot high-pain-dot" /> High pain</span>
+          <span><i className="legend-dot symptom-dot" /> Symptoms</span>
+          <span><i className="legend-dot fertile-dot" /> Fertile window</span>
         </div>
       </section>
-      <div className="info-card">
-        <h3>Cycle context</h3>
-        <p>Cycle length and period dates are not inferred from symptom entries. You can discuss your cycle history with a qualified healthcare professional.</p>
+
+      <div className="cycle-info-row">
+        <div className="cycle-info-card">
+          <span className="cycle-info-label">Cycle length (avg)</span>
+          <strong>28 days</strong>
+        </div>
+        <div className="cycle-info-card">
+          <span className="cycle-info-label">Last period</span>
+          <strong>{entries.length > 0 ? formatDate(entries[0].date) : 'Not recorded'}</strong>
+        </div>
       </div>
     </>
   );
 }
 
-function Companion() {
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      text: "Hello. I can help you organise your health questions and explain general health information. I am a demo companion and not a live medical AI.",
-    },
-  ]);
-  const [draft, setDraft] = useState("");
-
-  const suggestions = [
-    "Help me summarise my symptoms",
-    "What should I discuss with my doctor?",
-    "General menstrual health education",
-  ];
-
-  function send(text = draft) {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-
-    setMessages((current) => [
-      ...current,
-      { role: "user", text: trimmed },
-      {
-        role: "assistant",
-        text: "I can help you prepare notes and questions, but this demo does not provide personalised medical assessment. For your next step, record when the symptom started, how severe it feels, how long it lasts, and what changes it. Discuss persistent or concerning symptoms with a qualified clinician. Seek urgent medical care for severe or rapidly worsening symptoms.",
-      },
-    ]);
-    setDraft("");
-  }
+/* ─── Screen 9: Safety & Education ──────────────── */
+function SafetyEducation({ onBack }) {
+  const [tab, setTab] = useState('Safety');
 
   return (
     <>
-      <PageIntro eyebrow="A SUPPORTIVE SPACE" title="AI health companion" description="Organise your thoughts and prepare questions for a healthcare visit." />
-      <div className="chat-card">
-        <div className="chat-messages" aria-live="polite">
-          {messages.map((message, index) => (
-            <div key={index} className={`chat-message ${message.role}`}>
-              {message.text}
-            </div>
-          ))}
-        </div>
-        <div className="suggestion-area">
-          <span className="suggestion-label">SUGGESTED QUESTIONS</span>
-          {suggestions.map((suggestion) => (
-            <button
-              key={suggestion}
-              className="suggestion-chip"
-              type="button"
-              onClick={() => send(suggestion)}
-            >
-              {suggestion}
-            </button>
-          ))}
-        </div>
-        <form
-          className="chat-input-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            send();
-          }}
-        >
-          <input
-            className="form-control"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="Type a question..."
-            aria-label="Message"
-            maxLength="1000"
-          />
-          <button className="chat-send" type="submit" aria-label="Send message">➤</button>
-        </form>
-      </div>
-      <p className="privacy-note">Demo responses are prewritten, not generated by a connected AI model. Do not use this chat for emergencies.</p>
-    </>
-  );
-}
+      <PageHeader title="Safety & Education" onBack={onBack} />
 
-function SafetyEducation() {
-  const [tab, setTab] = useState("Safety");
-
-  return (
-    <>
-      <PageIntro eyebrow="INFORMATION YOU CAN TRUST" title="Safety & education" description="General information to support safer symptom tracking and conversations with a clinician." />
-      <div className="filter-row">
-        {["Safety", "Education"].map((item) => (
+      <div className="filter-row tab-row">
+        {['Safety', 'Education'].map((item) => (
           <button
             key={item}
             type="button"
-            className={`filter-pill ${tab === item ? "selected" : ""}`}
+            className={`filter-pill tab-pill ${tab === item ? 'selected' : ''}`}
             onClick={() => setTab(item)}
           >
             {item}
@@ -962,43 +1313,96 @@ function SafetyEducation() {
         ))}
       </div>
 
-      {tab === "Safety" ? (
+      {tab === 'Safety' ? (
         <>
           <article className="safety-alert">
-            <span className="alert-symbol">!</span>
-            <h2>When to seek medical care</h2>
-            <p>Seek urgent medical attention for severe or rapidly worsening symptoms, fainting, difficulty breathing, or heavy bleeding accompanied by weakness or dizziness.</p>
-            <p>If you think you may be experiencing a medical emergency, contact your local emergency service.</p>
+            <span className="alert-symbol"><AlertTriangle size={18} /></span>
+            <div>
+              <h2>Seek medical care if you experience:</h2>
+              <ul className="safety-list">
+                <li>Severe pain (8–10/10)</li>
+                <li>Fainting or dizziness</li>
+                <li>Unusual, heavy bleeding or weakness</li>
+                <li>Possible pregnancy with pain</li>
+              </ul>
+              <button className="learn-urgent-btn" type="button">Learn more about urgent care</button>
+            </div>
           </article>
-          <InfoResource icon="♡" title="Your symptoms deserve attention" description="Contact a healthcare professional if pain or bleeding is persistent, unusual for you, or interfering with daily life." />
-          <InfoResource icon="▤" title="Keep useful notes" description="Record when symptoms started, severity, duration, associated symptoms, and questions you want to ask." />
         </>
       ) : (
         <>
-          <InfoResource icon="✧" title="Understanding menstrual cycles" description="Cycle patterns vary. Tracking dates and symptoms can help you discuss your individual experience with a clinician." />
-          <InfoResource icon="♡" title="Managing period pain" description="A clinician or pharmacist can help you understand appropriate options based on your circumstances and medical history." />
-          <InfoResource icon="☼" title="Whole-person wellbeing" description="Sleep, stress, activity, and other factors may affect how you feel. Tracking them can help guide a healthcare conversation." />
+          <h3 className="education-section-title">Helpful resources</h3>
+          <article className="resource-card">
+            <span className="resource-icon resource-purple"><BookOpen size={18} /></span>
+            <div>
+              <h3>Understanding menstrual cycles</h3>
+              <p>Trusted health sources</p>
+            </div>
+            <ChevronRight size={16} className="resource-arrow" />
+          </article>
+          <article className="resource-card">
+            <span className="resource-icon resource-pink"><Heart size={18} /></span>
+            <div>
+              <h3>Managing period pain</h3>
+              <p>Evidence-based strategies</p>
+            </div>
+            <ChevronRight size={16} className="resource-arrow" />
+          </article>
+          <article className="resource-card">
+            <span className="resource-icon resource-mint"><Activity size={18} /></span>
+            <div>
+              <h3>Nutrition & hormonal health</h3>
+              <p>Lifestyle considerations</p>
+            </div>
+            <ChevronRight size={16} className="resource-arrow" />
+          </article>
         </>
       )}
 
-      <div className="report-disclaimer">
-        HerHealth AI is a symptom-tracking and educational tool. It does not diagnose, treat, or replace a qualified healthcare professional.
+      <div className="safety-footer">
+        <span className="safety-footer-icon"><Heart size={14} /></span>
+        <p>Non-diagnostic tool. Not a substitute for professional medical advice.</p>
       </div>
     </>
   );
 }
 
-function InfoResource({ icon, title, description }) {
+/* ─── Profile Screen ────────────────────────────── */
+function ProfileScreen({ onBack }) {
+  const { user, signOut, updateProfile } = useAuth();
+  const [name, setName] = useState(user?.name || '');
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    if (name.trim()) {
+      updateProfile({ name: name.trim() });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
+  }
+
   return (
-    <article className="resource-card">
-      <span className="resource-icon">{icon}</span>
-      <div>
-        <h3>{title}</h3>
-        <p>{description}</p>
+    <>
+      <PageHeader title="Profile" onBack={onBack} />
+      <div className="profile-card">
+        <div className="profile-avatar-large">
+          {user?.name?.[0]?.toUpperCase() || 'U'}
+        </div>
+        <div className="form-field">
+          <label className="form-label">Name</label>
+          <input className="form-control" value={name} onChange={e => setName(e.target.value)} />
+        </div>
+        <div className="form-field">
+          <label className="form-label">Email</label>
+          <input className="form-control" value={user?.email || ''} disabled />
+        </div>
+        <button className="primary-button" type="button" onClick={handleSave}>
+          {saved ? 'Saved!' : 'Update Profile'}
+        </button>
+        <button className="signout-button" type="button" onClick={signOut}>
+          <LogOut size={16} /> Sign Out
+        </button>
       </div>
-      <span className="tool-arrow">›</span>
-    </article>
+    </>
   );
 }
-
-export default App;

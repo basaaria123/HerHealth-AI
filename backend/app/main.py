@@ -1,9 +1,11 @@
 
+import os
 from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_db
@@ -34,10 +36,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "https://her-health-ai.vercel.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -173,4 +179,71 @@ def get_doctor_summary(db: Session = Depends(get_db)):
         "average_pain_severity": average_pain,
         "history": history,
         "disclaimer": disclaimer,
+    }
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list = []
+
+
+@app.post("/api/chat")
+def chat_with_ai(payload: ChatRequest):
+    """AI companion endpoint.
+
+    When GEMINI_API_KEY is set, this will forward requests to
+    Google Gemini. Otherwise returns a helpful template response.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+
+    if api_key:
+        try:
+            import httpx
+
+            response = httpx.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+                json={
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": (
+                                        "You are HerHealth AI, a supportive health "
+                                        "companion for women's health tracking. You "
+                                        "provide general health education only. You "
+                                        "never diagnose, prescribe, or replace "
+                                        "professional medical advice. Be warm, "
+                                        "concise, and evidence-aware.\n\n"
+                                        f"User: {payload.message}"
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            reply = (
+                data.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "I wasn't able to generate a response.")
+            )
+            return {"reply": reply}
+        except Exception:
+            pass
+
+    # Fallback: helpful template response
+    return {
+        "reply": (
+            "I can help you prepare notes and questions for your "
+            "healthcare visit. Try asking about your symptom patterns, "
+            "what to discuss with your doctor, or general health "
+            "education.\n\nNote: I provide general health information "
+            "only. For medical concerns, please consult a healthcare "
+            "professional."
+        ),
     }
